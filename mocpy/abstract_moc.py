@@ -1,15 +1,23 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*
+
+"""
+abstract_moc.py
+
+basic functions for manipulating mocs
+
+"""
+
 from __future__ import absolute_import, division, print_function, unicode_literals
-from .py23_compat import range, int
+#from .py23_compat import range, int
 
 import numpy as np
-
 from astropy.io import fits
-from astropy.table import Table
-from astropy_healpix.healpy import ring2nest, nside2npix
+from astropy_healpix.healpy import ring2nest
 
-from .interval_set import IntervalSet
-from . import utils
+from interval_set import IntervalSet
+import utils
+
 
 __author__ = "Thomas Boch, Matthieu Baumann"
 __copyright__ = "CDS, Centre de Données astronomiques de Strasbourg"
@@ -18,15 +26,11 @@ __license__ = "BSD 3-Clause License"
 __email__ = "thomas.boch@astro.unistra.fr, matthieu.baumann@astro.unistra.fr"
 
 
-class AbstractMOC:
-    """
-    Basic functions for manipulating MOCs.
-    """
+class AbstractMoc:
     HPY_MAX_NORDER = 29
 
-    def __init__(self, interval_set=None):
-        interval = IntervalSet() if interval_set is None else interval_set
-        self._interval_set = interval
+    def __init__(self):
+        self._interval_set = IntervalSet()
 
     def __repr__(self):
         return self._interval_set.__repr__()
@@ -45,75 +49,137 @@ class AbstractMOC:
         result : bool
             True if the interval sets of self and ``another_moc`` are equal (the interval sets are checked
             for consistency before comparing them).
-        """
-        if not isinstance(another_moc, AbstractMOC):
-            raise TypeError('Cannot compare an AbstractMOC with a {0}'.format(type(another_moc)))
 
-        return self._interval_set == another_moc._interval_set
+        """
+
+        if not isinstance(another_moc, AbstractMoc):
+            raise TypeError('Cannot compare an AbstractMoc with a {0}'.format(type(another_moc)))
+
+        result = (self._interval_set.intervals == another_moc._interval_set.intervals)
+        return result
+
+    def add_pix_list(self, order, i_pix_l, nest=True):
+        """
+        Add a list of HEALPix pixels at a given order to the
+        current mocpy object (This method uses numpy vectorization)
+
+        Parameters
+        ----------
+        order : int
+            The order of the pixel list to add
+        i_pix_l : [int]
+            The pixel list at ``order``
+        nest : bool, optional
+            True by default
+
+        """
+
+        add_pix_vect = np.vectorize(self.add_pix)
+        add_pix_vect(order, i_pix_l, nest=nest)
+
+    def add_pix(self, order, i_pix, nest=True):
+        """
+        Add a HEALPix pixel at a given order
+        to the current mocpy object (This method uses numpy vectorization)
+
+        Parameters
+        ----------
+        order : int
+            The order of the pixel to add
+        i_pix : int
+            The pixel at ``order``
+        nest : bool, optional
+            True by default
+
+        """
+
+        if order > AbstractMoc.HPY_MAX_NORDER:
+            raise ValueError('order can not be greater than AbstractMoc.HPY_MAX_NORDER')
+
+        if not nest:
+            i_pix = ring2nest(1 << order, i_pix)
+
+        p1 = i_pix
+        p2 = i_pix + 1
+        shift = 2 * (AbstractMoc.HPY_MAX_NORDER - order)
+
+        self._interval_set.add((p1 << shift, p2 << shift))
 
     @property
     def max_order(self):
         """
         This returns the deepest order needed to describe the current _interval_set
+
         """
-        # TODO: cache value
+
+        #  TODO: cache value
         combo = int(0)
-        for iv in self._interval_set._intervals:
+        for iv in self._interval_set.intervals:
             combo |= iv[0] | iv[1]
 
-        ret = AbstractMOC.HPY_MAX_NORDER - (utils.number_trailing_zeros(combo) // 2)
+        ret = AbstractMoc.HPY_MAX_NORDER - (utils.number_trailing_zeros(combo) // 2)
         if ret < 0:
             ret = 0
 
         return ret
 
-    """
     def _ensure_consistency(self):
-        '''
+        """
         Internal operation on the interval set of the mocpy object ensuring its consistency
 
         This private method is called when the user asks for :
         * plotting the moc
         * performing simple operations on it : intersection, union, difference of mocs
         * serializing the moc into json/fits format
-        '''
+
+        """
         self._interval_set.intervals
-    """
+
     def intersection(self, another_moc):
         """
         Intersection between self and moc
 
         Parameters
         ----------
-        another_moc : `mocpy.abstract_moc.AbstractMOC`
+        another_moc : `~mocpy.abstract_moc.AbstractMoc`
             the MOC/TimeMoc used for performing the intersection with self
 
         Returns
         -------
         result : `~mocpy.moc.MOC` or `~mocpy.tmoc.TimeMoc`
             MOC object whose interval set corresponds to : self & ``moc``
-        """
-        iv_set_intersection = self._interval_set.intersection(another_moc._interval_set)
-        result = self.__class__(iv_set_intersection)
 
+        """
+
+        iv_set_intersection = self._interval_set.intersection(another_moc._interval_set)
+        result = self.__class__.from_interval_set(iv_set_intersection)
         return result
 
-    def union(self, another_moc):
+    def union_moc_list(self, another_mocs = [] ):
         """
-        Union between self and moc
+        Union between self and a list of mocs
 
         Parameters
         ----------
-        another_moc : `mocpy.abstract_moc.AbstractMOC`
-            the MOC/TimeMoc to bind to self
+        another_mocs : `~mocpy.abstract_moc.AbstractMoc`
+            a list of MOC/TimeMoc to bind to self
 
         Returns
         -------
         result : `~mocpy.moc.MOC` or `~mocpy.tmoc.TimeMoc`
             MOC object whose interval set corresponds to : self | ``moc``
+
         """
-        iv_set_union = self._interval_set.union(another_moc._interval_set)
-        return self.__class__(iv_set_union)
+        for another_moc in another_mocs:
+            iv_set_union = self._interval_set.union(another_moc._interval_set)
+            result = self.__class__.from_interval_set(iv_set_union)
+            self = result
+
+        return result
+
+        #iv_set_union = self._interval_set.union(another_moc._interval_set)
+        #result = self.__class__.from_interval_set(iv_set_union)
+        #return result
 
     def difference(self, moc):
         """
@@ -121,16 +187,19 @@ class AbstractMOC:
 
         Parameters
         ----------
-        moc : `mocpy.abstract_moc.AbstractMOC`
+        moc : `~mocpy.abstract_moc.AbstractMoc`
             the MOC/TimeMoc to substract from self
 
         Returns
         -------
         result : `~mocpy.moc.MOC` or `~mocpy.tmoc.TimeMoc`
             MOC object whose interval set corresponds to : self - ``moc``
+
         """
+
         iv_set_difference = self._interval_set.difference(moc._interval_set)
-        return self.__class__(iv_set_difference)
+        result = self.__class__.from_interval_set(iv_set_difference)
+        return result
 
     def complement(self):
         """
@@ -138,31 +207,37 @@ class AbstractMOC:
 
         Returns
         -------
-        complement : `~mocpy.AbstractMoc`
+        result : `~mocpy.AbstractMoc`
             the complemented moc
+
         """
+
         complement_interval = self._complement_interval()
-        return self.__class__(complement_interval)
+
+        result = self.__class__.from_interval_set(complement_interval)
+        return result
 
     def _complement_interval(self):
-        res = []
-        intervals_l = sorted(self._interval_set._intervals.tolist())
+        from .interval_set import IntervalSet
+        res = IntervalSet()
 
-        if intervals_l[0][0] > 0:
-            res.append((0, intervals_l[0][0]))
+        interval_set = sorted(self._interval_set.intervals)
 
-        last = intervals_l[0][1]
+        if interval_set[0][0] > 0:
+            res.add((0, interval_set[0][0]))
 
-        for itv in intervals_l[1:]:
-            res.append((last, itv[0]))
+        last = interval_set[0][1]
+
+        for itv in interval_set[1:]:
+            res.add((last, itv[0]))
             last = itv[1]
 
         max_pix_order = self._get_max_pix()
 
         if last < max_pix_order:
-            res.append((last, max_pix_order))
+            res.add((last, max_pix_order))
 
-        return IntervalSet.from_numpy_array(np.asarray(res))
+        return res
 
     def _get_max_pix(self):
         pass
@@ -182,19 +257,16 @@ class AbstractMOC:
         -------
         neighbour_pix_arr : `~numpy.ndarray`
             an array of pixels containing the neighbours of the pixels in ``pix_arr``
+
         """
         neighbour_pix_arr = np.unique(hp.neighbours(pix_arr).ravel())
         # Remove negative pixel values returned by `~astropy_healpix.HEALPix.neighbours`
-        return neighbour_pix_arr[np.where(neighbour_pix_arr >= 0)]
-
-    """
-    IntervalSet should not be used by any user because it is the internal structure
-    of MOCs.
+        neighbour_pix_arr = neighbour_pix_arr[np.where(neighbour_pix_arr >= 0)]
+        return neighbour_pix_arr
 
     @classmethod
     def from_interval_set(cls, interval_set):
-        '''
-        Create a MOC/TimeMoc from an `~mocpy.interval_set.IntervalSet` object (all intervals at deepest norder)
+        """
         Create a MOC/TimeMoc from an `~mocpy.interval_set.IntervalSet` object (all intervals at deepest norder)
 
         Parameters
@@ -206,21 +278,23 @@ class AbstractMOC:
         -------
         moc : `~mocpy.moc.MOC` or `~mocpy.tmoc.TimeMoc`
             the MOC/TimeMoc object reflecting ``interval_set``.
-        '''
-        interval_set
-        moc = cls(interval_set)
+
+        """
+
+        moc = cls()
+        moc._interval_set = interval_set
+
         return moc
-    """
 
     @classmethod
     def from_json(cls, json_moc):
         """
-        Create a MOC from a dictionary of HEALPix arrays indexed by their order (in json format)
+        Create a MOC/TimeMoc from a dictionary of order : [pix] (.i.e json format)
 
         Parameters
         ----------
         json_moc : {str : [int]}
-            A dictionary of HEALPix arrays indexed by their order
+            The moc expressed as a dictionary of pixel lists indexed by their order
 
         Returns
         -------
@@ -228,20 +302,53 @@ class AbstractMOC:
             the MOC/TimeMoc object reflecting ``json_moc``.
 
         """
-        intervals_arr = np.array([])
-        for order, pix_l in json_moc.items():
-            pix_arr = np.array(pix_l)
-            p1 = pix_arr
-            p2 = pix_arr + 1
-            shift = 2 * (AbstractMOC.HPY_MAX_NORDER - int(order))
 
-            itv_arr = np.vstack((p1 << shift, p2 << shift)).T
-            if intervals_arr.size == 0:
-                intervals_arr = itv_arr
-            else:
-                intervals_arr = np.vstack((intervals_arr, itv_arr))
+        moc = cls()
+        for order, i_pix_l in json_moc.items():
+            moc.add_pix_list(order=int(order), i_pix_l=i_pix_l, nest=True)
 
-        return cls(IntervalSet.from_numpy_array(intervals_arr))
+        return moc
+
+    @classmethod
+    def from_uniq_interval_set(cls, uniq_is):
+        """
+        Create a MOC/TimeMoc from an IntervalSet of NUNIQ HEALPix pixels
+
+        Parameters
+        ----------
+        uniq_is : `~mocpy.interval_set.IntervalSet`
+            interval set of NUNIQ HEALPix pixels
+
+        Returns
+        -------
+        result : `~mocpy.moc.MOC` or `~mocpy.tmoc.TimeMoc`
+            the MOC/TimeMoc object reflecting ``uniq_is`` NUNIQ HEALPix interval set.
+
+        """
+
+        r = IntervalSet()
+        rtmp = IntervalSet()
+        last_order = 0
+
+        intervals = uniq_is.intervals
+        diff_order = AbstractMoc.HPY_MAX_NORDER
+        shift_order = 2 * diff_order
+        for interval in intervals:
+            for j in range(interval[0], interval[1]):
+                order, i_pix = utils.uniq2orderipix(j)
+
+                if order != last_order:
+                    r = r.union(rtmp)
+                    rtmp.clear()
+                    last_order = order
+                    diff_order = AbstractMoc.HPY_MAX_NORDER - order
+                    shift_order = 2 * diff_order
+
+                rtmp.add((i_pix << shift_order, (i_pix + 1) << shift_order))
+
+        r = r.union(rtmp)
+        moc = cls.from_interval_set(r)
+        return moc
 
     def uniq_pixels_iterator(self):
         """
@@ -251,14 +358,55 @@ class AbstractMOC:
         -------
         uniq :
             the NUNIQ HEALPix pixels iterator
+
         """
-        intervals_uniq_l = IntervalSet.to_nuniq_interval_set(self._interval_set)._intervals
-        for uniq_iv in intervals_uniq_l:
+
+        for uniq_iv in self.to_uniq_interval_set().intervals:
             for uniq in range(uniq_iv[0], uniq_iv[1]):
                 yield uniq
 
+    def to_uniq_interval_set(self):
+        """
+        Convert the default interval set form of the MOC/TimeMOC into an interval set of NUNIQ HEALPix pixels.
+
+        Returns
+        -------
+        res : `~mocpy.interval_set.IntervalSet`
+            the interval set of NUNIQ HEALPix pixels reflecting the current state of the MOC/TimeMoc.
+
+        """
+
+        r2 = IntervalSet(self._interval_set)
+        r3 = IntervalSet()
+        res = IntervalSet()
+
+        intervals = self._interval_set.intervals
+        if len(intervals) == 0:
+            return res
+
+        max_res_order = AbstractMoc.HPY_MAX_NORDER
+        order = 0
+        while not r2.empty():
+            shift = int(2 * (max_res_order - order))
+            ofs = (int(1) << shift) - 1
+            ofs2 = int(1) << (2 * order + 2)
+
+            r3.clear()
+            for iv in r2.intervals:
+                a = (int(iv[0]) + ofs) >> shift
+                b = int(iv[1]) >> shift
+                r3.add((a << shift, b << shift))
+                res.add((a + ofs2, b + ofs2))
+
+            if not r3.empty():
+                r2 = r2.difference(r3)
+
+            order += 1
+
+        return res
+
     @classmethod
-    def from_fits(cls, filename):
+    def from_moc_fits_file(cls, path):
         """
         Load a MOC from a MOC fits file (i.e. a fits file in which pix are stored as a list of NUNIQ HEALPix pixels
         in a binary table HDU).
@@ -268,21 +416,28 @@ class AbstractMOC:
 
         Parameters
         ----------
-        filename : str
+        path : str
             the path to the moc fits file
 
         Returns
         -------
         result : `~mocpy.moc.MOC` or `~mocpy.tmoc.TimeMoc`
             the mocpy object having as interval set the one stored in the fits file located at ``path``
+
         """
-        table = Table.read(filename)
 
-        intervals = np.vstack((table['UNIQ'], table['UNIQ']+1)).T
+        with fits.open(path) as hdulist:
+            # Case of a moc written in a fits file. Moc fits file stores the nuniq items in a
+            # BinTableHDU usually at index 1
+            if isinstance(hdulist[1], fits.hdu.table.BinTableHDU):
+                interval_set = IntervalSet()
+                # accessing directly recarray dramatically speed up the reading
+                data = hdulist[1].data.view(np.recarray)
+                for x in range(0, len(hdulist[1].data)):
+                    interval_set.add(data[x][0])
 
-        nuniq_interval_set = IntervalSet.from_numpy_array(intervals)
-        interval_set = IntervalSet.from_nuniq_interval_set(nuniq_interval_set)
-        return cls(interval_set)
+                result = cls.from_uniq_interval_set(interval_set)
+                return result
 
     def best_res_pixels_iterator(self):
         """
@@ -292,9 +447,11 @@ class AbstractMOC:
         -------
         val :
             the pixel iterator
+
         """
-        factor = 4 ** (AbstractMOC.HPY_MAX_NORDER - self.max_order)
-        for iv in self._interval_set._intervals:
+
+        factor = 4 ** (AbstractMoc.HPY_MAX_NORDER - self.max_order)
+        for iv in self._interval_set.intervals:
             for val in range(iv[0] // factor, iv[1] // factor):
                 yield val
 
@@ -313,7 +470,10 @@ class AbstractMOC:
         -------
         result : `~numpy.ndarray`
             boolean array telling which pix at the max_order are in the MOC
+
         """
+
+        from astropy_healpix.healpy import nside2npix
         max_order = self.max_order
         n_side = 2 ** max_order
 
@@ -332,6 +492,7 @@ class AbstractMOC:
 
         tbhdu : `~astropy.fits.BinTableHDU`
             fits HDU binary table
+
         """
         pass
 
@@ -349,7 +510,9 @@ class AbstractMOC:
         -------
         result_json : {str : [int]}
             a dictionary of pixel list each indexed by their order
+
         """
+
         result_json = {}
 
         order_arr, ipix_arr = utils.uniq2orderipix(uniq_arr)
@@ -371,16 +534,18 @@ class AbstractMOC:
 
         Parameters
         ----------
-        uniq_arr : `numpy.ndarray`
+        uniq_arr : `~numpy.ndarray`
             the array of uniq representing the mocpy object to serialize
         optional_kw_dict : dict
             optional keywords arguments added to the fits header
 
         Returns
         -------
-        thdulist : `astropy.io.fits.HDUList`
+        thdulist : `~astropy.io.fits.HDUList`
             the fits serialization of the MOC/TimeMoc object
+
         """
+
         moc_order = self.max_order
         if moc_order <= 13:
             fits_format = '1J'
@@ -423,14 +588,18 @@ class AbstractMOC:
 
         Returns
         -------
-        result : a `astropy.io.fits.HDUList` if ``format`` is set to "fits" or {str, [int]} otherwise
+        result : a `~astropy.io.fits.HDUList` if ``format`` is set to "fits" or {str, [int]} otherwise
             The serialization of the MOC/TimeMoc object
+
         """
+
         formats = ('fits', 'json')
         if format not in formats:
             raise ValueError('format should be one of %s' % (str(formats)))
 
+        self._ensure_consistency()
         uniq_l = []
+
         for uniq in self.uniq_pixels_iterator():
             uniq_l.append(uniq)
 
@@ -461,19 +630,23 @@ class AbstractMOC:
 
         Returns
         -------
-        moc : `mocpy.moc.MOC` or `mocpy.tmoc.TimeMoc`
+        moc : `~mocpy.moc.MOC` or `~mocpy.tmoc.TimeMoc`
             the res decreased mocpy object
+
         """
-        shift = 2 * (AbstractMOC.HPY_MAX_NORDER - new_order)
+
+        shift = 2 * (AbstractMoc.HPY_MAX_NORDER - new_order)
         ofs = (int(1) << shift) - 1
         mask = ~ofs
         adda = int(0)
         addb = ofs
-        iv_set = []
-        for iv in self._interval_set._intervals:
+        iv_set = IntervalSet()
+        for iv in self._interval_set.intervals:
             a = (iv[0] + adda) & mask
             b = (iv[1] + addb) & mask
             if b > a:
-                iv_set.append((a, b))
+                iv_set.add((a, b))
 
-        return self.__class__(IntervalSet.from_numpy_array(np.asarray(iv_set)))
+        moc = self.__class__.from_interval_set(iv_set)
+        moc._order = new_order
+        return moc
